@@ -384,11 +384,29 @@ function Write-PatchedPayload {
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
+function End-Script {
+    param([int]$Code = 0)
+    Write-Host "`nPress Enter to exit (auto-closes in 6s)..." -ForegroundColor DarkGray -NoNewline
+    if ($Host.Name -match 'ConsoleHost') {
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        while ($stopwatch.ElapsedMilliseconds -lt 6000) {
+            if ([Console]::KeyAvailable) {
+                [Console]::ReadKey($true) | Out-Null
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    } else {
+        Start-Sleep -Seconds 6
+    }
+    exit $Code
+}
+
 Write-Host '=== STFixer (full offline setup) ===' -ForegroundColor Cyan
 Write-Host ''
 
 $steamPath = Get-SteamPath
-if (-not $steamPath) { Write-Host 'ERROR: Steam not found.' -ForegroundColor Red; exit 1 }
+if (-not $steamPath) { Write-Host 'ERROR: Steam not found.' -ForegroundColor Red; End-Script -Code 1 }
 Write-Host "Steam: $steamPath" -ForegroundColor Gray
 
 Stop-Steam $steamPath
@@ -404,7 +422,7 @@ if (-not $dllPath) {
     $sections = Parse-PESections $dll
     $rdata = $sections | Where-Object Name -eq '.rdata'
     $text = $sections | Where-Object Name -eq '.text'
-    if (-not $text) { Write-Host 'ERROR: .text section not found.' -ForegroundColor Red; exit 1 }
+    if (-not $text) { Write-Host 'ERROR: .text section not found.' -ForegroundColor Red; End-Script -Code 1 }
 
     $tStart = [int]$text.RawOffset
     $tEnd = [Math]::Min($tStart + $text.RawSize, $dll.Length)
@@ -413,7 +431,7 @@ if (-not $dllPath) {
 
     # Core1: NOP download call
     $c1 = Find-Core1 $dll $tStart $tEnd
-    if ($c1 -lt 0) { Write-Host 'ERROR: Core1 not found - unsupported version?' -ForegroundColor Red; exit 1 }
+    if ($c1 -lt 0) { Write-Host 'ERROR: Core1 not found - unsupported version?' -ForegroundColor Red; End-Script -Code 1 }
     if (Test-Bytes $dll $c1 @(0xB8,0x01,0x00,0x00,0x00)) {
         Write-Host "  Core1: already patched" -ForegroundColor Green
         $c1Applied = $false
@@ -445,27 +463,27 @@ $cachePath = Find-PayloadCache $steamPath
 if (-not $cachePath) {
     Write-Host 'ERROR: No valid payload cache found.' -ForegroundColor Red
     Write-Host 'Run Steam with SteamTools installed at least once to generate the cache.' -ForegroundColor Yellow
-    exit 1
+    End-Script -Code 1
 }
 Write-Host "Payload cache: $cachePath" -ForegroundColor Gray
 
 $raw = [IO.File]::ReadAllBytes($cachePath)
-if ($raw.Length -lt 32) { Write-Host 'ERROR: Cache too small.' -ForegroundColor Red; exit 1 }
+if ($raw.Length -lt 32) { Write-Host 'ERROR: Cache too small.' -ForegroundColor Red; End-Script -Code 1 }
 $iv = $raw[0..15]; $ct = $raw[16..($raw.Length-1)]
 
 Write-Host "Decrypting payload..." -ForegroundColor Gray
 $dec = Decrypt-AES $ct $AesKey $iv
-if ($dec.Length -lt 6) { Write-Host 'ERROR: Decryption failed.' -ForegroundColor Red; exit 1 }
+if ($dec.Length -lt 6) { Write-Host 'ERROR: Decryption failed.' -ForegroundColor Red; End-Script -Code 1 }
 $payload = [ZLibHelper]::Decompress($dec[4..($dec.Length-1)])
 Write-Host "  Payload: $($payload.Length) bytes" -ForegroundColor Gray
 if ($payload[0] -ne [byte]'M'[0] -or $payload[1] -ne [byte]'Z'[0]) {
-    Write-Host 'ERROR: Payload does not start with MZ.' -ForegroundColor Red; exit 1
+    Write-Host 'ERROR: Payload does not start with MZ.' -ForegroundColor Red; End-Script -Code 1
 }
 
 $sections = Parse-PESections $payload
 $obf = $sections | Where-Object { $_.Name -notin $KnownSections } | Select-Object -First 1
 $text = $sections | Where-Object Name -eq '.text'
-if (-not $obf) { Write-Host 'ERROR: No obfuscated section found.' -ForegroundColor Red; exit 1 }
+if (-not $obf) { Write-Host 'ERROR: No obfuscated section found.' -ForegroundColor Red; End-Script -Code 1 }
 $obfStart = [int]$obf.RawOffset; $obfEnd = [Math]::Min($obfStart + $obf.RawSize, $payload.Length)
 $txtStart = if ($text) { [int]$text.RawOffset } else { 0 }
 $txtEnd = if ($text) { [Math]::Min($txtStart + $text.RawSize, $payload.Length) } else { 0 }
@@ -526,7 +544,7 @@ if ($p6 -lt 0) {
 if ($patchesApplied -eq 0) {
     Write-Host "`nAll patches already applied. Nothing to do." -ForegroundColor Green
     if ($c1Applied) { Backup-File $dllPath; Write-PatchedDll $dllPath $dll }
-    exit 0
+    End-Script
 }
 
 Write-Host "`nApplying patches..." -ForegroundColor Cyan
